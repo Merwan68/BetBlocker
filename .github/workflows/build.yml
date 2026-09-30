@@ -30,6 +30,17 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Prepare Build Environment (Keystore & Env)
+        run: |
+          if [ ! -f "debug.keystore" ]; then
+            echo "Generating debug.keystore for CI build..."
+            keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          if [ ! -f ".env" ]; then
+            echo "Creating empty .env file..."
+            touch .env
+          fi
+
       - name: Grant Execute Permission to Gradlew
         run: |
           if [ -f "./gradlew" ]; then
