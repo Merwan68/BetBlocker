@@ -1,0 +1,6 @@
+{
+  "name": "BetShield",
+  "description": "Gambling & betting protection app providing local DNS filtering, app blocking, and self-exclusion tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

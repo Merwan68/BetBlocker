@@ -1,0 +1,39 @@
+# Built application files
+*.apk
+*.aar
+*.aab
+
+# Gradle files
+.gradle/
+build/
+app/build/
+.kotlin/
+
+# Local configuration files
+local.properties
+.env
+.env.local
+
+# Keystores and signing certificates
+*.jks
+*.keystore
+*.p12
+*.key
+debug.keystore
+debug.keystore.base64
+my-upload-key.jks
+key.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx/
+
+# Log files
+*.log
+
+# OS metadata
+Thumbs.db

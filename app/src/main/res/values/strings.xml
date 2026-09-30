@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">BetShield</string>
+    <string name="accessibility_service_label">BetShield Gambling App Protection</string>
+    <string name="accessibility_service_description">Monitors foreground applications strictly to detect and prevent access to gambling and sports betting apps as configured in your BetShield protection rules. No keystrokes, personal messages, or private content are collected or transmitted.</string>
+    <string name="vpn_service_label">BetShield Local DNS Guard</string>
+    <string name="vpn_notification_title">BetShield Protection Active</string>
+    <string name="vpn_notification_desc">Safeguarding device against online betting and gambling domains.</string>
+</resources>
