@@ -34,7 +34,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import android.net.VpnService
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import com.example.service.AccessibilityHelper
 import com.example.service.DnsVpnService
+import com.example.ui.components.PermissionSetupDialog
 import com.example.ui.screens.AppsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.SecurityScreen
@@ -56,12 +58,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        try {
+            enableEdgeToEdge()
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
 
-        setContent {
-            MyApplicationTheme {
-                MainAppRoot()
+        try {
+            setContent {
+                MyApplicationTheme {
+                    MainAppRoot()
+                }
             }
+        } catch (e: Throwable) {
+            e.printStackTrace()
         }
     }
 }
@@ -79,9 +89,29 @@ fun MainAppRoot(viewModel: MainViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    var showPermissionSetup by remember {
+        mutableStateOf(
+            try {
+                VpnService.prepare(context) != null || !AccessibilityHelper.isAccessibilityServiceEnabled(context)
+            } catch (e: Throwable) {
+                false
+            }
+        )
+    }
+
+    if (showPermissionSetup) {
+        PermissionSetupDialog(
+            onDismiss = { showPermissionSetup = false }
+        )
+    }
+
     LaunchedEffect(uiState.isProtectionActive) {
         if (uiState.isProtectionActive && VpnService.prepare(context) == null) {
-            DnsVpnService.start(context)
+            try {
+                DnsVpnService.start(context)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 

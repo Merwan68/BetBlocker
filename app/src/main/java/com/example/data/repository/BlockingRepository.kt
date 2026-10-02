@@ -55,14 +55,11 @@ class BlockingRepository(
         val cleanHost = host.trim().lowercase().removePrefix("www.")
         if (cleanHost.isBlank()) return@withContext false
 
-        // Check exact match
-        if (domainDao.isDomainBlocked(cleanHost) > 0) return@withContext true
-
-        // Check root domain if subdomain query (e.g. sports.bet365.com -> bet365.com)
-        val parts = cleanHost.split(".")
-        if (parts.size > 2) {
-            val rootDomain = parts.takeLast(2).joinToString(".")
-            if (domainDao.isDomainBlocked(rootDomain) > 0) return@withContext true
+        // Check exact match and any parent suffix domain (e.g., m.dash.bet -> dash.bet)
+        var current = cleanHost
+        while (current.isNotBlank() && current.contains(".")) {
+            if (domainDao.isDomainBlocked(current) > 0) return@withContext true
+            current = current.substringAfter(".", "")
         }
         false
     }

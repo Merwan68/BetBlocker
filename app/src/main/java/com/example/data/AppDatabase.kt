@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
         BlockEventEntity::class,
         SyncMetadataEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,6 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "betshield_database.db"
                 )
+                    .fallbackToDestructiveMigration()
                     .addCallback(DatabasePreloadCallback())
                     .build()
                 INSTANCE = instance
@@ -57,28 +58,49 @@ abstract class AppDatabase : RoomDatabase() {
                 super.onCreate(db)
                 INSTANCE?.let { database ->
                     CoroutineScope(Dispatchers.IO).launch {
-                        seedDatabase(database)
+                        try {
+                            seedDatabase(database)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                }
+            }
+
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                super.onOpen(db)
+                INSTANCE?.let { database ->
+                    CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            seedDatabase(database)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
                     }
                 }
             }
 
             private suspend fun seedDatabase(database: AppDatabase) {
-                database.blockedDomainDao().insertDomains(InitialGamblingCatalog.defaultDomains)
-                database.blockedAppDao().insertApps(InitialGamblingCatalog.defaultApps)
-                database.syncMetadataDao().upsertMetadata(
-                    SyncMetadataEntity(
-                        key = "catalog_version",
-                        value = InitialGamblingCatalog.INITIAL_CATALOG_VERSION.toString(),
-                        updatedAt = System.currentTimeMillis()
+                try {
+                    database.blockedDomainDao().insertDomains(InitialGamblingCatalog.defaultDomains)
+                    database.blockedAppDao().insertApps(InitialGamblingCatalog.defaultApps)
+                    database.syncMetadataDao().upsertMetadata(
+                        SyncMetadataEntity(
+                            key = "catalog_version",
+                            value = InitialGamblingCatalog.INITIAL_CATALOG_VERSION.toString(),
+                            updatedAt = System.currentTimeMillis()
+                        )
                     )
-                )
-                database.syncMetadataDao().upsertMetadata(
-                    SyncMetadataEntity(
-                        key = "last_synced_at",
-                        value = System.currentTimeMillis().toString(),
-                        updatedAt = System.currentTimeMillis()
+                    database.syncMetadataDao().upsertMetadata(
+                        SyncMetadataEntity(
+                            key = "last_synced_at",
+                            value = System.currentTimeMillis().toString(),
+                            updatedAt = System.currentTimeMillis()
+                        )
                     )
-                )
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }

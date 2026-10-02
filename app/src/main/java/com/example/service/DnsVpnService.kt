@@ -46,35 +46,43 @@ class DnsVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1001
 
         fun start(context: Context) {
-            val intent = Intent(context, DnsVpnService::class.java).apply {
-                action = ACTION_START
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
+            try {
+                val intent = Intent(context, DnsVpnService::class.java).apply {
+                    action = ACTION_START
+                }
                 context.startService(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, DnsVpnService::class.java).apply {
-                action = ACTION_STOP
+            try {
+                val intent = Intent(context, DnsVpnService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            context.startService(intent)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        val db = AppDatabase.getInstance(this)
-        repository = BlockingRepository(
-            db.blockedDomainDao(),
-            db.blockedAppDao(),
-            db.blockEventDao(),
-            db.syncMetadataDao()
-        )
-        pinManager = PinManager(this)
-        createNotificationChannel()
+        try {
+            val db = AppDatabase.getInstance(this)
+            repository = BlockingRepository(
+                db.blockedDomainDao(),
+                db.blockedAppDao(),
+                db.blockEventDao(),
+                db.syncMetadataDao()
+            )
+            pinManager = PinManager(this)
+            createNotificationChannel()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -86,7 +94,11 @@ class DnsVpnService : VpnService() {
             }
             ACTION_START, null -> {
                 if (!isRunning) {
-                    startForeground(NOTIFICATION_ID, buildNotification())
+                    try {
+                        startForeground(NOTIFICATION_ID, buildNotification())
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
                     startVpn()
                 }
             }
