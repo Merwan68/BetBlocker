@@ -1,6 +1,7 @@
 package com.example.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 
 class AppBlockerAccessibilityService : AccessibilityService() {
 
@@ -21,8 +23,18 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     private lateinit var repository: BlockingRepository
     private lateinit var pinManager: PinManager
 
+    // Fast in-memory sets for O(1) instantaneous lookups
+    private val cachedBlockedPackages = ConcurrentHashMap.newKeySet<String>()
+    private val cachedBlockedDomains = ConcurrentHashMap.newKeySet<String>()
+
     private var lastBlockedTarget: String? = null
     private var lastBlockedTimestamp: Long = 0
+
+    companion object {
+        @Volatile
+        var isConnected: Boolean = false
+            private set
+    }
 
     private val browserPackages = setOf(
         "com.android.chrome",
@@ -54,6 +66,37 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         pinManager = PinManager(this)
     }
 
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        isConnected = true
+
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        info.notificationTimeout = 50
+        serviceInfo = info
+
+        // Synchronize in-memory active package IDs
+        serviceScope.launch {
+            repository.activeAppsFlow.collect { apps ->
+                val newSet = apps.filter { it.isActive && !it.isDeleted }.map { it.packageName }.toSet()
+                cachedBlockedPackages.clear()
+                cachedBlockedPackages.addAll(newSet)
+            }
+        }
+
+        // Synchronize in-memory active domain names
+        serviceScope.launch {
+            repository.activeDomainsFlow.collect { domains ->
+                val newSet = domains.filter { it.isActive && !it.isDeleted }.map { it.domain }.toSet()
+                cachedBlockedDomains.clear()
+                cachedBlockedDomains.addAll(newSet)
+            }
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         val eventType = event.eventType
@@ -67,6 +110,8 @@ class AppBlockerAccessibilityService : AccessibilityService() {
         // Ignore system and own app packages
         if (pkgName == packageName ||
             pkgName == "com.android.systemui" ||
+            pkgName == "com.google.android.apps.nexuslauncher" ||
+            pkgName == "com.android.launcher3" ||
             pkgName.startsWith("com.google.android.inputmethod")
         ) {
             return
@@ -78,14 +123,19 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
         // 1. Check if the foreground app itself is a blocked gambling package
         if (pinManager.protectionLevel != ProtectionLevel.BASIC) {
-            serviceScope.launch {
-                if (repository.isPackageBlocked(pkgName)) {
-                    if (pkgName == lastBlockedTarget && (now - lastBlockedTimestamp) < 1500) {
-                        return@launch
-                    }
-                    lastBlockedTarget = pkgName
-                    lastBlockedTimestamp = now
+            val isTargetBlocked = cachedBlockedPackages.contains(pkgName)
 
+            if (isTargetBlocked) {
+                if (pkgName == lastBlockedTarget && (now - lastBlockedTimestamp) < 1200) {
+                    return
+                }
+                lastBlockedTarget = pkgName
+                lastBlockedTimestamp = now
+
+                // Immediately drop to Home to minimize the gambling app
+                performGlobalAction(GLOBAL_ACTION_HOME)
+
+                serviceScope.launch {
                     val appDetails = repository.getAppDetails(pkgName)
                     val serviceName = appDetails?.appName ?: pkgName
                     val category = appDetails?.category ?: "Gambling Application"
@@ -99,22 +149,29 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
                     launchBlockingScreen(pkgName, serviceName, category)
                 }
+                return
             }
         }
 
         // 2. Check if user is navigating to a gambling website in a web browser
         if (browserPackages.contains(pkgName)) {
             val rootNode = rootInActiveWindow ?: return
-            serviceScope.launch {
-                val detectedDomain = extractDomainFromBrowser(rootNode)
-                if (!detectedDomain.isNullOrBlank() && detectedDomain.contains(".")) {
-                    if (repository.isDomainBlocked(detectedDomain)) {
-                        if (detectedDomain == lastBlockedTarget && (now - lastBlockedTimestamp) < 1500) {
-                            return@launch
-                        }
-                        lastBlockedTarget = detectedDomain
-                        lastBlockedTimestamp = now
+            val detectedDomain = extractDomainFromBrowser(rootNode)
+            if (!detectedDomain.isNullOrBlank() && detectedDomain.contains(".")) {
+                val isDomainBlocked = cachedBlockedDomains.contains(detectedDomain) ||
+                        cachedBlockedDomains.any { detectedDomain.endsWith(".$it") }
 
+                if (isDomainBlocked) {
+                    if (detectedDomain == lastBlockedTarget && (now - lastBlockedTimestamp) < 1200) {
+                        return
+                    }
+                    lastBlockedTarget = detectedDomain
+                    lastBlockedTimestamp = now
+
+                    // Drop to Home or Back
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+
+                    serviceScope.launch {
                         val domainDetails = repository.getDomainDetails(detectedDomain)
                         val serviceName = domainDetails?.serviceName ?: detectedDomain
                         val category = domainDetails?.category ?: "Gambling Website"
@@ -198,7 +255,9 @@ class AppBlockerAccessibilityService : AccessibilityService() {
 
     private fun launchBlockingScreen(target: String, serviceName: String, category: String) {
         val intent = Intent(this, AccessBlockedActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION
             putExtra("EXTRA_TARGET", target)
             putExtra("EXTRA_SERVICE_NAME", serviceName)
             putExtra("EXTRA_CATEGORY", category)
@@ -209,6 +268,7 @@ class AppBlockerAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        isConnected = false
         super.onDestroy()
         serviceScope.cancel()
     }

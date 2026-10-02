@@ -341,8 +341,10 @@ fun DashboardScreen(
 
                 SetupItemRow(
                     title = "Accessibility App Interceptor",
-                    subtitle = "Redirects gambling and betting apps",
-                    isActive = state.protectionLevel != com.example.security.ProtectionLevel.BASIC,
+                    subtitle = if (com.example.service.AccessibilityHelper.isAccessibilityServiceEnabled(context))
+                        "Actively monitoring & intercepting gambling apps"
+                    else "Tap to enable in Accessibility Settings",
+                    isActive = com.example.service.AccessibilityHelper.isAccessibilityServiceEnabled(context),
                     onClick = {
                         try {
                             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
