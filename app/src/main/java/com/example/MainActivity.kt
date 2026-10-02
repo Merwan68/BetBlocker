@@ -31,6 +31,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.net.VpnService
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import com.example.service.DnsVpnService
 import com.example.ui.screens.AppsScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.SecurityScreen
@@ -73,6 +77,13 @@ fun MainAppRoot(viewModel: MainViewModel = viewModel()) {
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    LaunchedEffect(uiState.isProtectionActive) {
+        if (uiState.isProtectionActive && VpnService.prepare(context) == null) {
+            DnsVpnService.start(context)
+        }
+    }
 
     // Handle Android system back gesture to return to Dashboard if in sub-screen
     BackHandler(enabled = currentTab != MainNavigationTab.DASHBOARD) {

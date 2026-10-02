@@ -23,6 +23,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.nio.ByteBuffer
 
 class DnsVpnService : VpnService() {
@@ -32,6 +35,9 @@ class DnsVpnService : VpnService() {
     private lateinit var repository: BlockingRepository
     private lateinit var pinManager: PinManager
     private var isRunning = false
+
+    private val upstreamDnsIps = listOf("1.1.1.1", "8.8.8.8")
+    private val localDnsIp = "10.1.10.1"
 
     companion object {
         const val ACTION_START = "com.example.service.DnsVpnService.START"
@@ -93,16 +99,23 @@ class DnsVpnService : VpnService() {
             val builder = Builder()
                 .setSession("BetShield Local DNS Guard")
                 .setMtu(1500)
-                .addAddress("10.1.10.1", 32)
-                .addDnsServer("1.1.1.1")
-                .addDnsServer("8.8.8.8")
-                .addRoute("10.1.10.0", 24)
+                .addAddress(localDnsIp, 32)
+                .addDnsServer(localDnsIp)
+                .addRoute(localDnsIp, 32)
+                // Intercept queries targeted at popular public DNS resolvers
+                .addRoute("1.1.1.1", 32)
+                .addRoute("1.0.0.1", 32)
+                .addRoute("8.8.8.8", 32)
+                .addRoute("8.8.4.4", 32)
+                .addRoute("9.9.9.9", 32)
+                .addRoute("208.67.222.222", 32)
+                .addRoute("208.67.220.220", 32)
 
             // Allow BetShield itself to bypass VPN
             try {
                 builder.addDisallowedApplication(packageName)
             } catch (e: Exception) {
-                // Ignore if package disallow not permitted
+                // Ignore if not permitted
             }
 
             vpnInterface = builder.establish()
@@ -122,78 +135,99 @@ class DnsVpnService : VpnService() {
     private suspend fun runPacketLoop(pfd: ParcelFileDescriptor) {
         val inputStream = FileInputStream(pfd.fileDescriptor)
         val outputStream = FileOutputStream(pfd.fileDescriptor)
-        val packet = ByteBuffer.allocate(32767)
+        val buffer = ByteArray(32767)
+
+        // Socket for forwarding safe queries to upstream DNS
+        var upstreamSocket: DatagramSocket? = null
+        try {
+            upstreamSocket = DatagramSocket()
+            protect(upstreamSocket)
+            upstreamSocket.soTimeout = 2500
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        val upstreamInetAddresses = upstreamDnsIps.mapNotNull {
+            runCatching { InetAddress.getByName(it) }.getOrNull()
+        }
 
         while (serviceScope.isActive && isRunning) {
             try {
-                val length = inputStream.read(packet.array())
+                val length = inputStream.read(buffer)
                 if (length > 0) {
-                    packet.limit(length)
-                    // Inspect IP/UDP packet for DNS queries (UDP port 53)
-                    val domain = parseDnsQueryDomain(packet.array(), length)
-                    if (domain != null && domain.isNotBlank()) {
-                        if (pinManager.isProtectionEnabled && repository.isDomainBlocked(domain)) {
-                            // Log blocked domain event in room database
-                            val details = repository.getDomainDetails(domain)
-                            repository.recordBlockEvent(
-                                target = domain,
-                                serviceName = details?.serviceName ?: domain,
-                                category = details?.category ?: "Gambling Website",
-                                targetType = "DOMAIN"
-                            )
+                    val query = DnsPacketHandler.parseQuery(buffer, length)
+                    if (query != null) {
+                        val isBlocked = pinManager.isProtectionEnabled && repository.isDomainBlocked(query.domain)
+
+                        if (isBlocked) {
+                            // Synthesize DNS answer returning 0.0.0.0
+                            val responsePacket = DnsPacketHandler.buildBlockedResponse(query)
+                            synchronized(outputStream) {
+                                outputStream.write(responsePacket)
+                                outputStream.flush()
+                            }
+
+                            // Log block event
+                            serviceScope.launch {
+                                val details = repository.getDomainDetails(query.domain)
+                                repository.recordBlockEvent(
+                                    target = query.domain,
+                                    serviceName = details?.serviceName ?: query.domain,
+                                    category = details?.category ?: "Gambling Website",
+                                    targetType = "DOMAIN"
+                                )
+                            }
+                        } else {
+                            // Forward query to upstream DNS
+                            upstreamSocket?.let { sock ->
+                                serviceScope.launch(Dispatchers.IO) {
+                                    forwardDnsQuery(sock, query, upstreamInetAddresses, outputStream)
+                                }
+                            }
                         }
                     }
-                    packet.clear()
                 } else {
-                    kotlinx.coroutines.delay(50)
+                    kotlinx.coroutines.delay(20)
                 }
             } catch (e: Exception) {
                 if (!isRunning) break
             }
         }
+
+        try {
+            upstreamSocket?.close()
+        } catch (e: Exception) {
+            // Ignore
+        }
     }
 
-    /**
-     * Extracts requested domain name from raw DNS packet.
-     */
-    private fun parseDnsQueryDomain(buffer: ByteArray, length: Int): String? {
-        try {
-            if (length < 28) return null
-            // Check IPv4 protocol: byte 9 should be 17 (UDP)
-            val ipHeaderLen = (buffer[0].toInt() and 0x0F) * 4
-            if (ipHeaderLen >= length || buffer[9].toInt() != 17) return null
+    private fun forwardDnsQuery(
+        socket: DatagramSocket,
+        query: DnsQuery,
+        upstreams: List<InetAddress>,
+        outputStream: FileOutputStream
+    ) {
+        for (upstream in upstreams) {
+            try {
+                val sendPacket = DatagramPacket(query.dnsPayload, query.dnsPayload.size, upstream, 53)
+                synchronized(socket) {
+                    socket.send(sendPacket)
+                    val recvBuffer = ByteArray(1500)
+                    val recvPacket = DatagramPacket(recvBuffer, recvBuffer.size)
+                    socket.receive(recvPacket)
 
-            val udpHeaderStart = ipHeaderLen
-            if (udpHeaderStart + 8 > length) return null
+                    val responseDnsPayload = recvBuffer.copyOf(recvPacket.length)
+                    val ipUdpPacket = DnsPacketHandler.buildForwardResponse(query, responseDnsPayload)
 
-            val destPort = ((buffer[udpHeaderStart + 2].toInt() and 0xFF) shl 8) or
-                    (buffer[udpHeaderStart + 3].toInt() and 0xFF)
-            if (destPort != 53) return null
-
-            val dnsStart = udpHeaderStart + 8
-            if (dnsStart + 12 > length) return null
-
-            // Start of DNS Question section
-            var pos = dnsStart + 12
-            val domainBuilder = StringBuilder()
-
-            while (pos < length) {
-                val labelLen = buffer[pos].toInt() and 0xFF
-                if (labelLen == 0) break
-                pos++
-                if (pos + labelLen > length) break
-
-                if (domainBuilder.isNotEmpty()) {
-                    domainBuilder.append(".")
+                    synchronized(outputStream) {
+                        outputStream.write(ipUdpPacket)
+                        outputStream.flush()
+                    }
                 }
-                for (i in 0 until labelLen) {
-                    domainBuilder.append(buffer[pos + i].toInt().toChar())
-                }
-                pos += labelLen
+                return
+            } catch (e: Exception) {
+                // Try next upstream
             }
-            return domainBuilder.toString().lowercase()
-        } catch (e: Exception) {
-            return null
         }
     }
 

@@ -200,10 +200,22 @@ fun DashboardScreen(
 
                     Switch(
                         checked = state.isProtectionActive,
-                        onCheckedChange = {
-                            if (state.isProtectionActive && state.isPinSet) {
-                                showPinDialog = true
+                        onCheckedChange = { checked ->
+                            if (!checked) {
+                                if (state.isPinSet) {
+                                    showPinDialog = true
+                                } else {
+                                    onToggleProtection(null) { success, msg ->
+                                        statusMessage = msg
+                                    }
+                                }
                             } else {
+                                val prepareIntent = VpnService.prepare(context)
+                                if (prepareIntent != null) {
+                                    vpnLauncher.launch(prepareIntent)
+                                } else {
+                                    DnsVpnService.start(context)
+                                }
                                 onToggleProtection(null) { success, msg ->
                                     statusMessage = msg
                                 }
